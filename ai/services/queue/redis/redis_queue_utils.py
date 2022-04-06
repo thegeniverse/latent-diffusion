@@ -46,7 +46,7 @@ class RedisQueue:
         channel_name: str,
         cb: Callable,
     ) -> None:
-        self.logger.debug("Redis queue listening...")
+        print("listening...")
 
         while True:
             # message = self.rpop(channel_name, )
@@ -54,9 +54,9 @@ class RedisQueue:
                 cb(None, )
 
             except Exception as e:
-                self.logger.info("Error in queue listen.", )
-                self.logger.info(e, )
+                print("Error in queue listen.", )
+                print(e, )
 
             time.sleep(0.5)
 
-            self.logger.debug("Redis listening...")
+            print("Redis listening...")

@@ -130,6 +130,7 @@ class JobManager:
 
     def process_message(
         self,
+        *args,
         **kwargs,
     ):
         print("processing message")
