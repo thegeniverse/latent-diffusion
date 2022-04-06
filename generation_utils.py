@@ -11,7 +11,26 @@ from einops import rearrange
 from ldm.util import instantiate_from_config
 from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.diffusion.plms import PLMSSampler
+    
+device = "cuda"
+device = torch.device(device, )
+    
+outdir: str = "output/txt2img-samples"
 
+os.makedirs(
+    outdir,
+    exist_ok=True,
+)
+outpath = outdir
+
+sample_path = os.path.join(
+    outpath,
+    "samples",
+)
+os.makedirs(
+    sample_path,
+    exist_ok=True,
+)
 
 def load_model_from_config(
     config: OmegaConf,
@@ -55,9 +74,25 @@ def load_model_from_config(
     return model
 
 
+
+config_path = "configs/latent-diffusion/txt2img-1p4B-eval.yaml"
+config = OmegaConf.load(
+    config_path,
+)  # TODO: Optionally download from same location as ckpt_path and chnage this logic
+
+model_ckpt_path = "models/ldm/text2img-large/model.ckpt"
+model = load_model_from_config(
+    config,
+    model_ckpt_path,
+    device=device,
+)
+
+model = model.to(device)
+
+
+
 def generate_from_prompt(
     prompt: str,
-    outdir: str = "output/txt2img-samples",
     ddim_steps: int = 200,
     ddim_eta: float = 0.0,
     plms: bool = False,
@@ -65,43 +100,14 @@ def generate_from_prompt(
     H: int = 256,
     W: int = 256,
     n_samples: int = 4,
+    temperature: float = 1.0,
     scale: float = 5.0,
-    device: str = "cuda",
 ):
-    device = torch.device(device, )
-
-    os.makedirs(
-        outdir,
-        exist_ok=True,
-    )
-    outpath = outdir
-
-    sample_path = os.path.join(
-        outpath,
-        "samples",
-    )
-    os.makedirs(
-        sample_path,
-        exist_ok=True,
-    )
-
+    torch.manual_seed(0)
     base_count = len(os.listdir(sample_path))
 
-    config_path = "configs/latent-diffusion/txt2img-1p4B-eval.yaml"
-    config = OmegaConf.load(
-        config_path,
-    )  # TODO: Optionally download from same location as ckpt_path and chnage this logic
-
-    model_ckpt_path = "models/ldm/text2img-large/model.ckpt"
-    model = load_model_from_config(
-        config,
-        model_ckpt_path,
-        device=device,
-    )
-
-    model = model.to(device)
-
     if plms:
+        print("Using plms")
         if ddim_eta != 0:
             print("Warning! Using plms samples with a ddim_eta != 0")
 
@@ -130,6 +136,7 @@ def generate_from_prompt(
                     unconditional_guidance_scale=scale,
                     unconditional_conditioning=uc,
                     eta=ddim_eta,
+                    temperature=temperature,
                 )
 
                 x_samples_ddim = model.decode_first_stage(samples_ddim, )
@@ -164,7 +171,7 @@ def generate_from_prompt(
 
     grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
     Image.fromarray(grid.astype(np.uint8)).save(
-        os.path.join(outpath, f'{prompt.replace(" ", "-")}.png'))
+        os.path.join(outpath, f'{base_count}-{prompt.replace(" ", "-")}.png'))
 
     print(
         f"Your samples are ready and waiting four you here: \n{outpath} \nEnjoy."
@@ -172,5 +179,9 @@ def generate_from_prompt(
 
 
 if __name__ == "__main__":
-    prompt = "I think I took too many mushrooms"
-    generate_from_prompt(prompt, )
+    prompt = "artstation artwork, psychedelic painting of a monkey"
+    #generate_from_prompt(prompt, plms=True, ddim_steps=10)
+    #generate_from_prompt(prompt, plms=True, ddim_steps=50)
+    #generate_from_prompt(prompt, plms=False, ddim_steps=10)
+    generate_from_prompt(prompt, plms=False, ddim_steps=100)
+
