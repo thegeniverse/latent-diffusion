@@ -57,6 +57,9 @@ As a rule of thumb, higher values of `scale` produce better samples at the cost 
 Furthermore, increasing `ddim_steps` generally also gives higher quality samples, but returns are diminishing for values > 250.
 Fast sampling (i.e. low values of `ddim_steps`) while retaining good quality can be achieved by using `--ddim_eta 0.0`.  
 
+(from https://github.com/crowsonkb/latent-diffusion/commit/f0c4e092c156986e125f48c61a0edd38ba8ad059)
+Faster sampling (i.e. even lower values of `ddim_steps`) while retaining good quality can be achieved by using `--ddim_eta 0.0` and `--plms` (added by Katherine Crowson, see [Pseudo Numerical Methods for Diffusion Models on Manifolds](https://arxiv.org/abs/2202.09778)).
+
 #### Beyond 256²
 
 For certain inputs, simply running the model in a convolutional fashion on larger features than it was trained on
