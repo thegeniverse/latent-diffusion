@@ -55,6 +55,8 @@ class Minion:
         #     channel_name=self.channel_name,
         #     cb=self.job_cb,
         # )
+        print("minion running")
+        print(self.channel_name)
         self.queue.listen(
             channel_name=self.channel_name,
             cb=self.job_cb,
@@ -62,37 +64,39 @@ class Minion:
         return
 
 
-logger = logging.getLogger("minion")
+if __name__ == "__main__":
+    logger = logging.getLogger("minion")
 
-channel_name = "ldm"
-pubsub = RedisPubSub(
-    host=PUBSUB_HOST,
-    port=REDIS_PORT,
-    logger=logger,
-)
-queue = RedisQueue(
-    host=QUEUE_HOST,
-    port=QUEUE_PORT,
-    logger=logger,
-)
-storage = S3(
-    bucket_name=BUCKET_NAME,
-    region_name=REGION_NAME,
-)
+    channel_name = "ldm"
+    pubsub = RedisPubSub(
+        host=PUBSUB_HOST,
+        port=REDIS_PORT,
+        logger=logger,
+    )
+    queue = RedisQueue(
+        host=QUEUE_HOST,
+        port=QUEUE_PORT,
+        logger=logger,
+    )
+    storage = S3(
+        bucket_name=BUCKET_NAME,
+        region_name=REGION_NAME,
+    )
 
-minion = Minion(
-    channel_name=channel_name,
-    pubsub=pubsub,
-    queue=queue,
-)
+    minion = Minion(
+        channel_name=channel_name,
+        pubsub=pubsub,
+        queue=queue,
+    )
 
-job_manager = JobManager(
-    pubsub=pubsub,
-    queue=queue,
-    storage=storage,
-    logger=logger,
-    channel_name=channel_name,
-)
+    job_manager = JobManager(
+        pubsub=pubsub,
+        queue=queue,
+        storage=storage,
+        logger=logger,
+        channel_name=channel_name,
+    )
 
-minion.register_job(job_manager.process_message, )
-minion.run()
+    minion.register_job(job_manager.process_message, )
+    print("Minion running!")
+    minion.run()

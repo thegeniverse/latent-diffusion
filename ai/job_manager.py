@@ -132,7 +132,10 @@ class JobManager:
         self,
         **kwargs,
     ):
+        print("processing message")
         job_data_dict = self.queue.rpop(self.channel_name)
+
+        print(f"data received: {job_data_dict}")
 
         if job_data_dict is None:
             return
