@@ -57,12 +57,15 @@ class JobManager:
             print("Publishing to s3!")
 
             prompt = data_dict.get("prompt")
-            step = data_dict["step"]
+            step = data_dict.get("step")
             event = data_dict["event"]
             img = data_dict.get("img")
             thumbnail = data_dict.get("thumbnail")
             video = data_dict.get("video")
             user_id = data_dict["userId"]
+
+            if step is None:
+                step = 0
 
             job_id = str(uuid.uuid4())
 
