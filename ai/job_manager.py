@@ -144,6 +144,11 @@ class JobManager:
         job_data_dict = json.loads(job_data_dict, )
 
         prompt = job_data_dict.get("prompt")
-        _ = generate_from_prompt(prompt, )
+        job_id = job_data_dict.get("jobId")
+        img_pil = generate_from_prompt(prompt, )
+        self.s3_publisher_cb({
+            "userId": job_id,
+            "img": img_pil,
+        })
 
         return
