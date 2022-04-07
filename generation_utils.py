@@ -1,3 +1,4 @@
+import gc
 import os
 
 import torch
@@ -62,14 +63,14 @@ def load_model_from_config(
         print("unexpected keys:")
         print(unexpected_keys)
 
-    model.eval()
-
-    # TODO: check if this is necessary
-    model.to(device, )
-
     # HACK: can make stuff more efficient
     if mixed_precision:
         model.half()
+    
+    # TODO: check if this is necessary
+    model.to(device, )
+
+    model.eval()
 
     return model
 
@@ -86,14 +87,14 @@ model = load_model_from_config(
     model_ckpt_path,
     device=device,
 )
+model.half()
 
 model = model.to(device)
 
 
-
 def generate_from_prompt(
     prompt: str,
-    ddim_steps: int = 200,
+    ddim_steps: int = 100,
     ddim_eta: float = 0.0,
     plms: bool = False,
     n_iter: int = 1,
@@ -101,9 +102,19 @@ def generate_from_prompt(
     W: int = 256,
     n_samples: int = 4,
     temperature: float = 1.0,
-    scale: float = 5.0,
+    scale: float = 10.0,
+    num_rows: int = 2,
+    save_result: bool = False,
 ):
-    torch.manual_seed(0)
+    #torch.manual_seed(0)
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    #if prompt[0] == ".":
+    #    prompt = prompt[1::]
+
+    #prompt = prompt + ". Oil on canvas"
+
     base_count = len(os.listdir(sample_path))
 
     if plms:
@@ -118,64 +129,75 @@ def generate_from_prompt(
 
     all_samples = list()
     with torch.no_grad():
-        with model.ema_scope():
-            uc = None
+        with torch.cuda.amp.autocast():
+            with model.ema_scope():
+                uc = None
 
-            if scale != 1.0:
-                uc = model.get_learned_conditioning(n_samples * [""], )
+                if scale != 1.0:
+                    uc = model.get_learned_conditioning(n_samples * [""], )
 
-            for _n in trange(n_iter, desc="Sampling"):
-                c = model.get_learned_conditioning(n_samples * [prompt], )
-                shape = [4, H // 8, W // 8]
-                samples_ddim, _ = sampler.sample(
-                    S=ddim_steps,
-                    conditioning=c,
-                    batch_size=n_samples,
-                    shape=shape,
-                    verbose=False,
-                    unconditional_guidance_scale=scale,
-                    unconditional_conditioning=uc,
-                    eta=ddim_eta,
-                    temperature=temperature,
-                )
-
-                x_samples_ddim = model.decode_first_stage(samples_ddim, )
-                x_samples_ddim = torch.clamp(
-                    (x_samples_ddim + 1.0) / 2.0,
-                    min=0.0,
-                    max=1.0,
-                )
-
-                for x_sample in x_samples_ddim:
-                    x_sample = 255. * rearrange(
-                        x_sample.cpu().numpy(),
-                        'c h w -> h w c',
+                for _n in trange(n_iter, desc="Sampling"):
+                    c = model.get_learned_conditioning(n_samples * [prompt], )
+                    shape = [4, H // 8, W // 8]
+                    samples_ddim, _ = sampler.sample(
+                        S=ddim_steps,
+                        conditioning=c,
+                        batch_size=n_samples,
+                        shape=shape,
+                        verbose=False,
+                        unconditional_guidance_scale=scale,
+                        unconditional_conditioning=uc,
+                        eta=ddim_eta,
+                        temperature=temperature,
                     )
 
-                    Image.fromarray(x_sample.astype(np.uint8)).save(
-                        os.path.join(sample_path, f"{base_count:04}.png"))
+                    x_samples_ddim = model.decode_first_stage(samples_ddim, )
+                    x_samples_ddim = torch.clamp(
+                        (x_samples_ddim + 1.0) / 2.0,
+                        min=0.0,
+                        max=1.0,
+                    )
 
-                    base_count += 1
+                    for x_sample in x_samples_ddim:
+                        x_sample = 255. * rearrange(
+                            x_sample.cpu().numpy(),
+                            'c h w -> h w c',
+                        )
 
-                all_samples.append(x_samples_ddim, )
+                        if save_result:
+                            Image.fromarray(x_sample.astype(np.uint8)).save(
+                                os.path.join(sample_path, f"{base_count:04}.png"))
+
+                        base_count += 1
+
+                    all_samples.append(x_samples_ddim, )
 
     grid = torch.stack(all_samples, 0)
     grid = rearrange(
         grid,
         'n b c h w -> (n b) c h w',
     )
+
+    if num_rows is None:
+        num_rows = 2
+
     grid = torchvision.utils.make_grid(
         grid,
-        nrow=n_samples,
+        nrow=num_rows,
     )
 
     grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
-    Image.fromarray(grid.astype(np.uint8)).save(
-        os.path.join(outpath, f'{base_count}-{prompt.replace(" ", "-")}.png'))
+    pil_img = Image.fromarray(grid.astype(np.uint8))
 
-    print(
-        f"Your samples are ready and waiting four you here: \n{outpath} \nEnjoy."
-    )
+    if save_result:
+        pil_img.save(
+            os.path.join(outpath, f'{base_count}-{prompt.replace(" ", "-")}.png'))
+
+        print(
+            f"Your samples are ready and waiting four you here: \n{outpath} \nEnjoy."
+        )
+
+    return pil_img
 
 
 if __name__ == "__main__":
@@ -183,5 +205,5 @@ if __name__ == "__main__":
     #generate_from_prompt(prompt, plms=True, ddim_steps=10)
     #generate_from_prompt(prompt, plms=True, ddim_steps=50)
     #generate_from_prompt(prompt, plms=False, ddim_steps=10)
-    generate_from_prompt(prompt, plms=False, ddim_steps=100)
+    generate_from_prompt(prompt, plms=False, ddim_steps=50, n_samples=4, n_iter=1, num_rows = 2,)
 
