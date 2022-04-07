@@ -55,64 +55,34 @@ class JobManager:
     ):
         def s3_publisher(data_dict, ):
             print("Publishing to s3!")
+            print(data_dict)
 
-            prompt = data_dict.get("prompt")
-            step = data_dict.get("step")
-            event = data_dict["event"]
             img = data_dict.get("img")
-            thumbnail = data_dict.get("thumbnail")
-            video = data_dict.get("video")
-            user_id = data_dict["userId"]
+            job_id = data_dict.get("jobId")
 
-            if step is None:
-                step = 0
+            element_id = f"{job_id}"
 
-            job_id = str(uuid.uuid4())
+            img_id = f"{element_id}.jpg"
 
-            if prompt is not None:
-                element_id = f"{job_id}_{prompt}_{step}"
+            self.storage.upload_pil_img(
+                pil_img=img,
+                img_id=img_id,
+                img_format="JPEG",
+            )
 
-            else:
-                element_id = f"{job_id}_{step}"
-
-            thumbnail_id = f"{event}/{element_id}_thumbnail.jpg"
-            img_id = f"{event}/{element_id}_img.jpg"
-            video_id = f"{event}/{element_id}_video.mp4"
-
-            if img is not None:
-                self.storage.upload_pil_img(
-                    pil_img=img,
-                    img_id=img_id,
-                    img_format="JPEG",
-                )
+            print(f"Data in aws!")
 
             pub_data_dict = dict(
-                event=data_dict.get("event"),
                 imgId=img_id,
-                step=data_dict.get("step"),
                 bucketName=self.storage.bucket_name,
                 regionName=self.storage.region_name,
             )
 
             _ = self.pubsub.publish(
-                user_id,
+                job_id,
                 json.dumps(pub_data_dict),
             )
-
-            if thumbnail is not None:
-                self.storage.upload_pil_img(
-                    pil_img=thumbnail,
-                    img_id=thumbnail_id,
-                    img_format="JPEG",
-                )
-
-            if video is not None:
-                self.storage.upload_video(
-                    video=video,
-                    video_id=video_id,
-                )
-
-            print(f"Data from step {data_dict['step']} in aws ({user_id})")
+            print(f"Published in channel {job_id}")
 
         Thread(
             target=s3_publisher,
@@ -146,11 +116,11 @@ class JobManager:
 
         job_data_dict = json.loads(job_data_dict, )
 
-        prompt = job_data_dict.get("prompt")
-        job_id = job_data_dict.get("jobId")
+        prompt = job_data_dict.get("text")
+        job_id = job_data_dict.get("id")
         img_pil = generate_from_prompt(prompt, )
         self.s3_publisher_cb({
-            "userId": job_id,
+            "jobId": job_id,
             "img": img_pil,
         })
 
