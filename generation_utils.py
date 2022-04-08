@@ -99,7 +99,7 @@ class LDMDecoder(ImageGenerator):
         self,
         prompt: str,
         shape: Tuple[int, ],
-        lr: float = 0.08,
+        lr: float = 0.1,
         num_steps: int = 16,
         num_augmentations: int = 32,
         target_img_width: int = 224,
@@ -122,7 +122,7 @@ class LDMDecoder(ImageGenerator):
         )
 
         for step_idx in range(num_steps, ):
-            x_samples_ddim = model.decode_first_stage(z_logits[None, :], )
+            x_samples_ddim = model.decode_first_stage(z_logits, )
 
             x_samples_ddim = torch.clamp(
                 (x_samples_ddim + 1.0) / 2.0,
@@ -147,12 +147,16 @@ class LDMDecoder(ImageGenerator):
             optimizer.step()
             optimizer.zero_grad()
 
-            torchvision.transforms.ToPILImage()(
-                x_samples_ddim[0]).save(f"output/{step_idx}.png")
+            #for batch_idx in range(x_samples_ddim.shape[0]):
+            #    torchvision.transforms.ToPILImage()(
+            #        x_samples_ddim[batch_idx]).save(f"output/{batch_idx}-{step_idx}.png")
 
             print(f"Step {step_idx} done!")
+            print(f"clip loss {clip_loss}")
 
         print(f"Optimization step")
+
+        return z_logits
 
 
 config_path = "configs/latent-diffusion/txt2img-1p4B-eval.yaml"
@@ -190,7 +194,7 @@ def generate_from_prompt(
         prompt_list = [
             prompt_list,
         ]
-    #torch.manual_seed(0)
+    torch.manual_seed(0)
     torch.cuda.empty_cache()
     gc.collect()
 
@@ -212,6 +216,8 @@ def generate_from_prompt(
         sampler = DDIMSampler(model, )
 
     shape = [4, H // 8, W // 8]
+                
+    batch_size = n_samples * len(prompt_list)
 
     all_samples = list()
     with torch.no_grad():
@@ -224,50 +230,104 @@ def generate_from_prompt(
                     n_samples * len(prompt_list) * [""], )
 
             for _n in trange(n_iter, desc="Sampling"):
-                c = model.get_learned_conditioning([
-                    prompt for _ in range(n_samples) for prompt in prompt_list
-                ], )
-                shape = [4, H // 8, W // 8]
-
                 with torch.enable_grad():
-                    x0 = ldm_decoder.optimize_latent(
-                        prompt=prompt_list[0],
-                        shape=shape,
+                    z_logits = torch.randn(
+                        [batch_size, *shape],
+                        device=device,
                     )
 
-                samples_ddim, intermediates = sampler.sample(
-                    S=ddim_steps,
-                    conditioning=c,
-                    batch_size=n_samples * len(prompt_list),
-                    shape=shape,
-                    verbose=False,
-                    unconditional_guidance_scale=scale,
-                    unconditional_conditioning=uc,
-                    eta=ddim_eta,
-                    temperature=temperature,
-                    x0=x0,
-                )
-                x_samples_ddim = model.decode_first_stage(samples_ddim, )
+                    z_logits = torch.nn.Parameter(z_logits)
+                    z_logits.requires_grad = True
 
-                x_samples_ddim = torch.clamp(
-                    (x_samples_ddim + 1.0) / 2.0,
-                    min=0.0,
-                    max=1.0,
-                )
+                    num_augmentations = 16
+                    target_img_width = 224
+                    target_img_height = 224
+                    loss_type = "cosine_similarity"
+                    lr = 0.1
 
-                if save_result:
-                    for x_sample in x_samples_ddim:
-                        x_sample = 255. * rearrange(
-                            x_sample.cpu().numpy(),
-                            'c h w -> h w c',
+                    optimizer = torch.optim.AdamW(
+                        params=[z_logits],
+                        lr=lr,
+                        betas=(0.9, 0.999),
+                        weight_decay=0.1,
+                    )
+
+                    num_clip_steps = 1
+
+                    for clip_idx in range(num_clip_steps):
+                        c = model.get_learned_conditioning([
+                            prompt for _ in range(n_samples) for prompt in prompt_list
+                        ], )
+                        shape = [4, H // 8, W // 8]
+
+                        x_T = None
+                        #with torch.enable_grad():
+                        #    x_T = ldm_decoder.optimize_latent(
+                        #        prompt=prompt_list[0],
+                        #        shape=[batch_size, *shape],
+                        #    )
+
+                        if clip_idx == num_clip_steps - 1:
+                            ddim_steps = 100
+
+                        samples_ddim, intermediates = sampler.sample(
+                            S=ddim_steps,
+                            conditioning=c,
+                            batch_size=batch_size,
+                            shape=shape,
+                            verbose=False,
+                            unconditional_guidance_scale=scale,
+                            unconditional_conditioning=uc,
+                            eta=ddim_eta,
+                            temperature=temperature,
+                            x_T=z_logits,
+                        )
+                        x_samples_ddim = model.decode_first_stage(samples_ddim, )
+
+                        x_samples_ddim = torch.clamp(
+                            (x_samples_ddim + 1.0) / 2.0,
+                            min=0.0,
+                            max=1.0,
                         )
 
-                        Image.fromarray(x_sample.astype(np.uint8)).save(
-                            os.path.join(sample_path, f"{base_count:04}.png"))
+                        x_rec_stacked = ldm_decoder.augment(
+                            x_samples_ddim.to(torch.float32),
+                            num_crops=num_augmentations,
+                            target_img_width=target_img_width,
+                            target_img_height=target_img_height,
+                        )
 
-                    base_count += 1
+                        clip_loss = 10 * ldm_decoder.compute_clip_loss(
+                            x_rec_stacked,
+                            prompt_list[0],
+                            loss_type,
+                        )
 
-                all_samples.append(x_samples_ddim, )
+                        print(f"loss {clip_loss}")
+
+                        #clip_loss.backward()
+                        #optimizer.step()
+                        #optimizer.zero_grad()
+
+                        #x_samples_ddim = torch.clamp(
+                        #    (x_samples_ddim + 1.0) / 2.0,
+                        #    min=0.0,
+                        #    max=1.0,
+                        #)
+
+                        if save_result:
+                            for x_sample in x_samples_ddim:
+                                x_sample = 255. * rearrange(
+                                    x_sample.detach().cpu().numpy(),
+                                    'c h w -> h w c',
+                                )
+
+                                Image.fromarray(x_sample.astype(np.uint8)).save(
+                                    os.path.join(sample_path, f"{base_count:04}.png"))
+
+                            base_count += 1
+
+                        all_samples.append(x_samples_ddim, )
 
     grid = torch.stack(all_samples, 0)
     grid = rearrange(
@@ -283,7 +343,7 @@ def generate_from_prompt(
         nrow=num_rows,
     )
 
-    grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
+    grid = 255. * rearrange(grid, 'c h w -> h w c').detach().cpu().numpy()
     pil_img = Image.fromarray(grid.astype(np.uint8))
 
     if save_result:
@@ -301,31 +361,42 @@ def generate_from_prompt(
 
 if __name__ == "__main__":
     prompt_list = [
-        "artstation artwork, psychedelic painting of a cat",
-        "artstation artwork, psychedelic painting of a gorilla",
-        "artstation artwork, psychedelic painting of a elephant",
-        "artstation artwork, psychedelic painting of a lion",
+        "photorealistic robotic shark",
+        #"photorealistic robotic shark",
+        #"photorealistic robotic shark",
+        #"photorealistic robotic shark",
+        #"photorealistic robotic shark",
+        #"photorealistic robotic shark",
+        #"photorealistic robotic shark",
+        #"photorealistic robotic shark",
+        #"artstation artwork, psychedelic painting of a cat",
+        #"artstation artwork, psychedelic painting of a cat",
+        #"artstation artwork, psychedelic painting of a cat",
+        #"artstation artwork, psychedelic painting of a gorilla",
+        #"artstation artwork, psychedelic painting of a elephant",
+        #"artstation artwork, psychedelic painting of a lion",
     ]
     n_samples = 1
     #generate_from_prompt(prompt, plms=True, ddim_steps=10)
     #generate_from_prompt(prompt, plms=True, ddim_steps=50)
     #generate_from_prompt(prompt, plms=False, ddim_steps=10)
-    img = generate_from_prompt(
-        prompt_list,
-        plms=False,
-        ddim_steps=50,
-        n_samples=n_samples,
-        n_iter=1,
-        num_rows=2,
-    )
-    img.save("output/ddim.png")
+    #img = generate_from_prompt(
+    #    prompt_list,
+    #    plms=False,
+    #    ddim_steps=50,
+    #    n_samples=n_samples,
+    #    n_iter=1,
+    #    num_rows=2,
+    #)
+    #img.save("output/ddim.png")
 
     img = generate_from_prompt(
         prompt_list,
         plms=True,
-        ddim_steps=50,
+        ddim_steps=10,
         n_samples=n_samples,
         n_iter=1,
         num_rows=2,
+        save_result=True,
     )
     img.save("output/plms.png")
