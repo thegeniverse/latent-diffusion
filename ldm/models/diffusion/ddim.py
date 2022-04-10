@@ -78,6 +78,7 @@ class DDIMSampler(object):
         batch_size,
         shape,
         conditioning=None,
+        conditioning_negative=None,
         callback=None,
         normals_sequence=None,
         img_callback=None,
@@ -91,8 +92,9 @@ class DDIMSampler(object):
         corrector_kwargs=None,
         verbose=True,
         x_T=None,
-        log_every_t=100,
+        log_every_t=1,
         unconditional_guidance_scale=1.,
+        negative_unconditional_guidance_scale=1.,
         unconditional_conditioning=None,
         # this has to come in the same format as the conditioning, # e.g. as encoded tokens, ...
         **kwargs):
@@ -117,6 +119,7 @@ class DDIMSampler(object):
 
         samples, intermediates = self.ddim_sampling(
             conditioning,
+            conditioning_negative,
             size,
             callback=callback,
             img_callback=img_callback,
@@ -131,6 +134,8 @@ class DDIMSampler(object):
             x_T=x_T,
             log_every_t=log_every_t,
             unconditional_guidance_scale=unconditional_guidance_scale,
+            negative_unconditional_guidance_scale=
+            negative_unconditional_guidance_scale,
             unconditional_conditioning=unconditional_conditioning,
         )
         return samples, intermediates
@@ -139,6 +144,7 @@ class DDIMSampler(object):
     def ddim_sampling(
         self,
         cond,
+        cond_negative,
         shape,
         x_T=None,
         ddim_use_original_steps=False,
@@ -148,12 +154,13 @@ class DDIMSampler(object):
         mask=None,
         x0=None,
         img_callback=None,
-        log_every_t=100,
+        log_every_t=1,
         temperature=1.,
         noise_dropout=0.,
         score_corrector=None,
         corrector_kwargs=None,
         unconditional_guidance_scale=1.,
+        negative_unconditional_guidance_scale=1.,
         unconditional_conditioning=None,
     ):
         device = self.model.betas.device
@@ -193,6 +200,7 @@ class DDIMSampler(object):
             outs = self.p_sample_ddim(
                 img,
                 cond,
+                cond_negative,
                 ts,
                 index=index,
                 use_original_steps=ddim_use_original_steps,
@@ -202,6 +210,8 @@ class DDIMSampler(object):
                 score_corrector=score_corrector,
                 corrector_kwargs=corrector_kwargs,
                 unconditional_guidance_scale=unconditional_guidance_scale,
+                negative_unconditional_guidance_scale=
+                negative_unconditional_guidance_scale,
                 unconditional_conditioning=unconditional_conditioning)
             img, pred_x0 = outs
             if callback: callback(i)
@@ -214,33 +224,47 @@ class DDIMSampler(object):
         return img, intermediates
 
     @torch.no_grad()
-    def p_sample_ddim(self,
-                      x,
-                      c,
-                      t,
-                      index,
-                      repeat_noise=False,
-                      use_original_steps=False,
-                      quantize_denoised=False,
-                      temperature=1.,
-                      noise_dropout=0.,
-                      score_corrector=None,
-                      corrector_kwargs=None,
-                      unconditional_guidance_scale=1.,
-                      unconditional_conditioning=None):
+    def p_sample_ddim(
+        self,
+        x,
+        c,
+        c_negative,
+        t,
+        index,
+        repeat_noise=False,
+        use_original_steps=False,
+        quantize_denoised=False,
+        temperature=1.,
+        noise_dropout=0.,
+        score_corrector=None,
+        corrector_kwargs=None,
+        unconditional_guidance_scale=1.,
+        negative_unconditional_guidance_scale=1.,
+        unconditional_conditioning=None,
+    ):
         b, *_, device = *x.shape, x.device
 
         if unconditional_conditioning is None or unconditional_guidance_scale == 1.:
             e_t = self.model.apply_model(x, t, c)
 
         else:
-            x_in = torch.cat([x] * 2)
-            t_in = torch.cat([t] * 2)
-            c_in = torch.cat([unconditional_conditioning, c])
+            x_in = torch.cat([x, x])
+            t_in = torch.cat([t, t])
+            c_in = torch.cat([
+                unconditional_conditioning,
+                c,
+            ])
             e_t_uncond, e_t = self.model.apply_model(x_in, t_in, c_in).chunk(2)
 
-            e_t = e_t_uncond + unconditional_guidance_scale * (e_t -
-                                                               e_t_uncond)
+            if c_negative is not None:
+                e_t_negative = self.model.apply_model(x, t, c_negative)
+
+                e_t = e_t_uncond + negative_unconditional_guidance_scale * (
+                    e_t_negative - e_t_uncond)
+
+            else:
+                e_t = e_t_uncond + unconditional_guidance_scale * (e_t -
+                                                                   e_t_uncond)
 
         if score_corrector is not None:
             assert self.model.parameterization == "eps"
