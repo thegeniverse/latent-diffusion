@@ -9,367 +9,292 @@ from omegaconf import OmegaConf
 from PIL import Image
 from tqdm import trange
 from einops import rearrange
-from geniverse.modeling_utils import ImageGenerator
 
 from ldm.util import instantiate_from_config
 from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.diffusion.plms import PLMSSampler
 
-device = "cuda"
-device = torch.device(device, )
 
-outdir: str = "output/txt2img-samples"
-
-os.makedirs(
-    outdir,
-    exist_ok=True,
-)
-outpath = outdir
-
-sample_path = os.path.join(
-    outpath,
-    "samples",
-)
-os.makedirs(
-    sample_path,
-    exist_ok=True,
-)
-
-
-def load_model_from_config(
-    config: OmegaConf,
-    ckpt_path: str,
-    verbose: bool = False,
-    mixed_precision: bool = False,
-    device: str = "cuda",
-):
-    print(f"Loading model from {ckpt_path}")
-
-    pl_sd = torch.load(
-        ckpt_path,
-        map_location=device,
-    )
-
-    sd = pl_sd["state_dict"]
-
-    model = instantiate_from_config(config.model, )
-    missing_keys, unexpected_keys = model.load_state_dict(
-        sd,
-        strict=False,
-    )
-
-    if len(missing_keys) > 0 and verbose:
-        print("missing keys:")
-        print(missing_keys)
-
-    if len(unexpected_keys) > 0 and verbose:
-        print("unexpected keys:")
-        print(unexpected_keys)
-
-    # HACK: can make stuff more efficient
-    if mixed_precision:
-        model.half()
-
-    # TODO: check if this is necessary
-    #model.to(device, )
-
-    # model.eval()
-
-    return model
-
-
-class LDMDecoder(ImageGenerator):
+class LatentDiffusionModel:
     def __init__(
         self,
-        device: str = 'cuda',
-        **kwargs,
-    ) -> None:
-        super().__init__(
-            device=device,
-            **kwargs,
-        )
-
-        if device is not None:
-            self.device = device
-
-    def generate_from_prompt(self, *args, **kwargs):
-        return super().generate_from_prompt(*args, **kwargs)
-
-    def optimize_latent(
-        self,
-        prompt: str,
-        shape: Tuple[int, ],
-        lr: float = 0.1,
-        num_steps: int = 16,
-        num_augmentations: int = 32,
-        target_img_width: int = 224,
-        target_img_height: int = 224,
-        loss_type: str = "cosine_similarity",
+        config_path: str = "configs/latent-diffusion/txt2img-1p4B-eval.yaml",
+        model_ckpt_path: str = "models/ldm/text2img-large/model.ckpt",
+        outdir: str = "output/txt2img-samples",
+        device: str = "cuda:0",
     ):
-        z_logits = torch.randn(
-            shape,
-            device=device,
+        self.device = torch.device(device, )
+
+        os.makedirs(
+            outdir,
+            exist_ok=True,
+        )
+        self.outpath = outdir
+
+        self.sample_path = os.path.join(
+            self.outpath,
+            "samples",
+        )
+        os.makedirs(
+            self.sample_path,
+            exist_ok=True,
         )
 
-        z_logits = torch.nn.Parameter(z_logits)
-        z_logits.requires_grad = True
+        config = OmegaConf.load(config_path, )
 
-        optimizer = torch.optim.AdamW(
-            params=[z_logits],
-            lr=lr,
-            betas=(0.9, 0.999),
-            weight_decay=0.1,
+        self.model = self.load_model_from_config(
+            config,
+            model_ckpt_path,
         )
 
-        for step_idx in range(num_steps, ):
-            x_samples_ddim = model.decode_first_stage(z_logits, )
+    def load_model_from_config(
+        self,
+        config: OmegaConf,
+        ckpt_path: str,
+        verbose: bool = False,
+        mixed_precision: bool = False,
+    ):
+        print(f"Loading model from {ckpt_path}")
 
-            x_samples_ddim = torch.clamp(
-                (x_samples_ddim + 1.0) / 2.0,
-                min=0.0,
-                max=1.0,
-            )
+        pl_sd = torch.load(
+            ckpt_path,
+            map_location="cpu",
+        )
 
-            x_rec_stacked = self.augment(
-                x_samples_ddim.to(torch.float32),
-                num_crops=num_augmentations,
-                target_img_width=target_img_width,
-                target_img_height=target_img_height,
-            )
+        sd = pl_sd["state_dict"]
 
-            clip_loss = 10 * self.compute_clip_loss(
-                x_rec_stacked,
-                prompt,
-                loss_type,
-            )
+        model = instantiate_from_config(config.model, )
+        missing_keys, unexpected_keys = model.load_state_dict(
+            sd,
+            strict=False,
+        )
 
-            clip_loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
+        if len(missing_keys) > 0 and verbose:
+            print("missing keys:")
+            print(missing_keys)
 
-            #for batch_idx in range(x_samples_ddim.shape[0]):
-            #    torchvision.transforms.ToPILImage()(
-            #        x_samples_ddim[batch_idx]).save(f"output/{batch_idx}-{step_idx}.png")
+        if len(unexpected_keys) > 0 and verbose:
+            print("unexpected keys:")
+            print(unexpected_keys)
 
-            print(f"Step {step_idx} done!")
-            print(f"clip loss {clip_loss}")
+        if mixed_precision:
+            model.half()
 
-        print(f"Optimization step")
+        model.to(self.device)
 
-        return z_logits
+        model.eval()
 
+        return model
 
-config_path = "configs/latent-diffusion/txt2img-1p4B-eval.yaml"
-config = OmegaConf.load(
-    config_path,
-)  # TODO: Optionally download from same location as ckpt_path and chnage this logic
+    def generate_from_prompt(
+        self,
+        prompt_list: List[str],
+        ddim_steps: int = 100,
+        ddim_eta: float = 0.0,
+        plms: bool = True,
+        n_iter: int = 1,
+        img_height: int = 256,
+        img_width: int = 256,
+        n_samples: int = 4,
+        temperature: float = 1.0,
+        scale: float = 10.0,
+        negative_scale: float = 10.0,
+        num_grid_rows: int = 2,
+        save_result: bool = False,
+        save_intermediates: bool = False,
+        seed: int = None,
+    ):
+        torch.cuda.empty_cache()
+        gc.collect()
 
-model_ckpt_path = "models/ldm/text2img-large/model.ckpt"
-model = load_model_from_config(
-    config,
-    model_ckpt_path,
-    device=device,
-)
+        if seed is not None:
+            torch.manual_seed(seed, )
 
-model = model.to(device)
+        if isinstance(prompt_list, str):
+            prompt_list = [
+                prompt_list,
+            ]
 
-ldm_decoder = LDMDecoder()
+        num_saved_imgs = len(os.listdir(self.sample_path, ))
 
+        if plms:
+            print("Using plms")
 
-def generate_from_prompt(
-    prompt_list: List[str],
-    ddim_steps: int = 100,
-    ddim_eta: float = 0.0,
-    plms: bool = False,
-    n_iter: int = 1,
-    H: int = 256,
-    W: int = 256,
-    n_samples: int = 4,
-    temperature: float = 1.0,
-    scale: float = 10.0,
-    num_rows: int = 2,
-    save_result: bool = False,
-):
-    if isinstance(prompt_list, str):
-        prompt_list = [
-            prompt_list,
-        ]
-    torch.manual_seed(0)
-    torch.cuda.empty_cache()
-    gc.collect()
+            if ddim_eta != 0:
+                print("Warning! Using plms samples with a ddim_eta != 0")
 
-    #if prompt[0] == ".":
-    #    prompt = prompt[1::]
+            sampler = PLMSSampler(self.model, )
 
-    #prompt = prompt + ". Oil on canvas"
+        else:
+            sampler = DDIMSampler(self.model, )
 
-    base_count = len(os.listdir(sample_path))
+        shape = [4, img_height // 8, img_width // 8]
 
-    if plms:
-        print("Using plms")
-        if ddim_eta != 0:
-            print("Warning! Using plms samples with a ddim_eta != 0")
+        batch_size = n_samples * len(prompt_list)
 
-        sampler = PLMSSampler(model, )
+        all_samples = list()
+        with torch.no_grad():
+            # with torch.cuda.amp.autocast():
+            with self.model.ema_scope():
+                uc = None
 
-    else:
-        sampler = DDIMSampler(model, )
+                if scale != 1.0:
+                    uc = self.model.get_learned_conditioning(
+                        batch_size * [""], )
 
-    shape = [4, H // 8, W // 8]
-                
-    batch_size = n_samples * len(prompt_list)
+                for _ in trange(n_iter, desc="Sampling"):
+                    # init_noise = torch.randn(
+                    #     [batch_size, *shape],
+                    #     device=self.device,
+                    # )
 
-    all_samples = list()
-    with torch.no_grad():
-        # with torch.cuda.amp.autocast():
-        with model.ema_scope():
-            uc = None
+                    x = torchvision.transforms.ToTensor()(
+                        Image.open("./output/shark.jpg").resize(
+                            (256, 256))).to(self.device)[None, :] * 2 - 1
+                    encoder_posterior = self.model.encode_first_stage(x)
+                    init_noise = self.model.get_first_stage_encoding(
+                        encoder_posterior).detach()
+                    # init_noise = None
 
-            if scale != 1.0:
-                uc = model.get_learned_conditioning(
-                    n_samples * len(prompt_list) * [""], )
+                    c = self.model.get_learned_conditioning([
+                        prompt for _ in range(n_samples)
+                        for prompt in prompt_list
+                    ], )
 
-            for _n in trange(n_iter, desc="Sampling"):
-                with torch.enable_grad():
-                    z_logits = torch.randn(
-                        [batch_size, *shape],
-                        device=device,
+                    c_negative = self.model.get_learned_conditioning(
+                        ["psychedelic image"], )
+                    c_negative = torch.cat([c_negative] * batch_size)
+
+                    c_negative = None
+
+                    shape = [4, img_height // 8, img_width // 8]
+
+                    samples_ddim, intermediates = sampler.sample(
+                        S=ddim_steps,
+                        conditioning=c,
+                        conditioning_negative=c_negative,
+                        batch_size=batch_size,
+                        shape=shape,
+                        verbose=False,
+                        unconditional_guidance_scale=scale,
+                        negative_unconditional_guidance_scale=negative_scale,
+                        unconditional_conditioning=uc,
+                        eta=ddim_eta,
+                        temperature=temperature,
+                        x_T=init_noise,
                     )
 
-                    z_logits = torch.nn.Parameter(z_logits)
-                    z_logits.requires_grad = True
+                    if save_intermediates:
+                        for inter_idx, intermediate in enumerate(
+                                intermediates["pred_x0"]):
+                            x_samples_ddim = self.model.decode_first_stage(
+                                intermediate, )
 
-                    num_augmentations = 16
-                    target_img_width = 224
-                    target_img_height = 224
-                    loss_type = "cosine_similarity"
-                    lr = 0.1
+                            x_samples_ddim = torch.clamp(
+                                (x_samples_ddim + 1.0) / 2.0,
+                                min=0.0,
+                                max=1.0,
+                            )
 
-                    optimizer = torch.optim.AdamW(
-                        params=[z_logits],
-                        lr=lr,
-                        betas=(0.9, 0.999),
-                        weight_decay=0.1,
-                    )
-
-                    num_clip_steps = 1
-
-                    for clip_idx in range(num_clip_steps):
-                        c = model.get_learned_conditioning([
-                            prompt for _ in range(n_samples) for prompt in prompt_list
-                        ], )
-                        shape = [4, H // 8, W // 8]
-
-                        x_T = None
-                        #with torch.enable_grad():
-                        #    x_T = ldm_decoder.optimize_latent(
-                        #        prompt=prompt_list[0],
-                        #        shape=[batch_size, *shape],
-                        #    )
-
-                        if clip_idx == num_clip_steps - 1:
-                            ddim_steps = 100
-
-                        samples_ddim, intermediates = sampler.sample(
-                            S=ddim_steps,
-                            conditioning=c,
-                            batch_size=batch_size,
-                            shape=shape,
-                            verbose=False,
-                            unconditional_guidance_scale=scale,
-                            unconditional_conditioning=uc,
-                            eta=ddim_eta,
-                            temperature=temperature,
-                            x_T=z_logits,
-                        )
-                        x_samples_ddim = model.decode_first_stage(samples_ddim, )
-
-                        x_samples_ddim = torch.clamp(
-                            (x_samples_ddim + 1.0) / 2.0,
-                            min=0.0,
-                            max=1.0,
-                        )
-
-                        x_rec_stacked = ldm_decoder.augment(
-                            x_samples_ddim.to(torch.float32),
-                            num_crops=num_augmentations,
-                            target_img_width=target_img_width,
-                            target_img_height=target_img_height,
-                        )
-
-                        clip_loss = 10 * ldm_decoder.compute_clip_loss(
-                            x_rec_stacked,
-                            prompt_list[0],
-                            loss_type,
-                        )
-
-                        print(f"loss {clip_loss}")
-
-                        #clip_loss.backward()
-                        #optimizer.step()
-                        #optimizer.zero_grad()
-
-                        #x_samples_ddim = torch.clamp(
-                        #    (x_samples_ddim + 1.0) / 2.0,
-                        #    min=0.0,
-                        #    max=1.0,
-                        #)
-
-                        if save_result:
                             for x_sample in x_samples_ddim:
                                 x_sample = 255. * rearrange(
                                     x_sample.detach().cpu().numpy(),
                                     'c h w -> h w c',
                                 )
 
-                                Image.fromarray(x_sample.astype(np.uint8)).save(
-                                    os.path.join(sample_path, f"{base_count:04}.png"))
+                                Image.fromarray(
+                                    x_sample.astype(np.uint8)
+                                ).save(
+                                    os.path.join(
+                                        self.sample_path,
+                                        f"{num_saved_imgs:04}_{inter_idx}.png")
+                                )
 
-                            base_count += 1
+                        # for inter_idx, intermediate in enumerate(
+                        #         intermediates["x_inter"]):
+                        #     x_samples_ddim = self.model.decode_first_stage(
+                        #         intermediate, )
 
-                        all_samples.append(x_samples_ddim, )
+                        #     x_samples_ddim = torch.clamp(
+                        #         (x_samples_ddim + 1.0) / 2.0,
+                        #         min=0.0,
+                        #         max=1.0,
+                        #     )
 
-    grid = torch.stack(all_samples, 0)
-    grid = rearrange(
-        grid,
-        'n b c h w -> (n b) c h w',
-    )
+                        #     for x_sample in x_samples_ddim:
+                        #         x_sample = 255. * rearrange(
+                        #             x_sample.detach().cpu().numpy(),
+                        #             'c h w -> h w c',
+                        #         )
 
-    if num_rows is None:
-        num_rows = 2
+                        #         Image.fromarray(
+                        #             x_sample.astype(np.uint8)
+                        #         ).save(
+                        #             os.path.join(
+                        #                 self.sample_path,
+                        #                 f"{num_saved_imgs:04}_{inter_idx}.png")
+                        #         )
 
-    grid = torchvision.utils.make_grid(
-        grid,
-        nrow=num_rows,
-    )
+                    x_samples_ddim = self.model.decode_first_stage(
+                        samples_ddim, )
 
-    grid = 255. * rearrange(grid, 'c h w -> h w c').detach().cpu().numpy()
-    pil_img = Image.fromarray(grid.astype(np.uint8))
+                    x_samples_ddim = torch.clamp(
+                        (x_samples_ddim + 1.0) / 2.0,
+                        min=0.0,
+                        max=1.0,
+                    )
 
-    if save_result:
-        pil_img.save(
-            os.path.join(
-                outpath,
-                f'{base_count}-{prompt_list[0].replace(" ", "-")}.png'))
+                    if save_result:
+                        for x_sample in x_samples_ddim:
+                            x_sample = 255. * rearrange(
+                                x_sample.detach().cpu().numpy(),
+                                'c h w -> h w c',
+                            )
 
-        print(
-            f"Your samples are ready and waiting four you here: \n{outpath} \nEnjoy."
+                            Image.fromarray(x_sample.astype(np.uint8)).save(
+                                os.path.join(self.sample_path,
+                                             f"{num_saved_imgs:04}.png"))
+
+                        num_saved_imgs += 1
+
+                    all_samples.append(x_samples_ddim, )
+
+        grid = torch.stack(all_samples, 0)
+        grid = rearrange(
+            grid,
+            'n b c h w -> (n b) c h w',
         )
 
-    return pil_img
+        if num_grid_rows is None:
+            num_grid_rows = 2
+
+        grid = torchvision.utils.make_grid(
+            grid,
+            nrow=num_grid_rows,
+        )
+
+        grid = 255. * rearrange(grid, 'c h w -> h w c').detach().cpu().numpy()
+        pil_img = Image.fromarray(grid.astype(np.uint8))
+
+        if save_result:
+            pil_img.save(
+                os.path.join(
+                    self.outpath,
+                    f'{num_saved_imgs}-{prompt_list[0].replace(" ", "-")}.png')
+            )
+
+            print(
+                f"Your samples are ready and waiting four you here: \n{self.outpath} \nEnjoy."
+            )
+
+        return pil_img
 
 
 if __name__ == "__main__":
     prompt_list = [
-        "photorealistic robotic shark",
-        #"photorealistic robotic shark",
-        #"photorealistic robotic shark",
-        #"photorealistic robotic shark",
-        #"photorealistic robotic shark",
-        #"photorealistic robotic shark",
-        #"photorealistic robotic shark",
-        #"photorealistic robotic shark",
-        #"artstation artwork, psychedelic painting of a cat",
+        "an illustration of a baby radish in tutu walking a dog",
+        # "3D concept character. Robot shark rendered with unity. Robot shark trending on artstation. A character in 3D of a robot shark",
+        # "artstation artwork, psychedelic painting of a cat",
         #"artstation artwork, psychedelic painting of a cat",
         #"artstation artwork, psychedelic painting of a cat",
         #"artstation artwork, psychedelic painting of a gorilla",
@@ -377,26 +302,19 @@ if __name__ == "__main__":
         #"artstation artwork, psychedelic painting of a lion",
     ]
     n_samples = 1
-    #generate_from_prompt(prompt, plms=True, ddim_steps=10)
-    #generate_from_prompt(prompt, plms=True, ddim_steps=50)
-    #generate_from_prompt(prompt, plms=False, ddim_steps=10)
-    #img = generate_from_prompt(
-    #    prompt_list,
-    #    plms=False,
-    #    ddim_steps=50,
-    #    n_samples=n_samples,
-    #    n_iter=1,
-    #    num_rows=2,
-    #)
-    #img.save("output/ddim.png")
 
-    img = generate_from_prompt(
+    model = LatentDiffusionModel()
+
+    img = model.generate_from_prompt(
         prompt_list,
-        plms=True,
-        ddim_steps=10,
+        plms=False,
+        ddim_steps=200,
         n_samples=n_samples,
         n_iter=1,
-        num_rows=2,
+        num_grid_rows=2,
         save_result=True,
+        save_intermediates=True,
+        seed=666,
+        scale=13.,
+        negative_scale=0.,
     )
-    img.save("output/plms.png")
