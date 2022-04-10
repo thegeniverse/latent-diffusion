@@ -96,7 +96,7 @@ class LatentDiffusionModel:
         img_height: int = 256,
         img_width: int = 256,
         n_samples: int = 4,
-        temperature: float = 1.0,
+        temperature: float = 1,
         scale: float = 10.0,
         negative_scale: float = 10.0,
         num_grid_rows: int = 2,
@@ -130,7 +130,10 @@ class LatentDiffusionModel:
 
         shape = [4, img_height // 8, img_width // 8]
 
-        batch_size = n_samples * len(prompt_list)
+        prompt_list = [
+            prompt for _ in range(n_samples) for prompt in prompt_list
+        ]
+        batch_size = len(prompt_list)
 
         all_samples = list()
         with torch.no_grad():
@@ -148,18 +151,15 @@ class LatentDiffusionModel:
                     #     device=self.device,
                     # )
 
-                    x = torchvision.transforms.ToTensor()(
-                        Image.open("./output/shark.jpg").resize(
-                            (256, 256))).to(self.device)[None, :] * 2 - 1
-                    encoder_posterior = self.model.encode_first_stage(x)
-                    init_noise = self.model.get_first_stage_encoding(
-                        encoder_posterior).detach()
-                    # init_noise = None
+                    # x = torchvision.transforms.ToTensor()(
+                    #     Image.open("./output/shark.jpg").resize(
+                    #         (256, 256))).to(self.device)[None, :] * 2 - 1
+                    # encoder_posterior = self.model.encode_first_stage(x)
+                    # init_noise = self.model.get_first_stage_encoding(
+                    #     encoder_posterior).detach()
+                    init_noise = None
 
-                    c = self.model.get_learned_conditioning([
-                        prompt for _ in range(n_samples)
-                        for prompt in prompt_list
-                    ], )
+                    c = self.model.get_learned_conditioning(prompt_list, )
 
                     c_negative = self.model.get_learned_conditioning(
                         ["psychedelic image"], )
@@ -292,7 +292,7 @@ class LatentDiffusionModel:
 
 if __name__ == "__main__":
     prompt_list = [
-        "an illustration of a baby radish in tutu walking a dog",
+        "robotic shark. Oil in canvas.",
         # "3D concept character. Robot shark rendered with unity. Robot shark trending on artstation. A character in 3D of a robot shark",
         # "artstation artwork, psychedelic painting of a cat",
         #"artstation artwork, psychedelic painting of a cat",
@@ -301,20 +301,20 @@ if __name__ == "__main__":
         #"artstation artwork, psychedelic painting of a elephant",
         #"artstation artwork, psychedelic painting of a lion",
     ]
-    n_samples = 1
+    n_samples = 4
 
     model = LatentDiffusionModel()
 
     img = model.generate_from_prompt(
         prompt_list,
         plms=False,
-        ddim_steps=200,
+        ddim_steps=50,
         n_samples=n_samples,
         n_iter=1,
         num_grid_rows=2,
         save_result=True,
-        save_intermediates=True,
+        save_intermediates=False,
         seed=666,
-        scale=13.,
+        scale=10.,
         negative_scale=0.,
     )
