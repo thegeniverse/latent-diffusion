@@ -95,7 +95,7 @@ class LatentDiffusionModel:
         n_iter: int = 1,
         img_height: int = 256,
         img_width: int = 256,
-        n_samples: int = 4,
+        n_samples: int = 1,
         temperature: float = 1,
         scale: float = 10.0,
         negative_scale: float = 10.0,
@@ -103,7 +103,7 @@ class LatentDiffusionModel:
         save_result: bool = False,
         save_intermediates: bool = False,
         seed: int = None,
-    ):
+    ) -> torch.Tensor:
         torch.cuda.empty_cache()
         gc.collect()
 
@@ -135,7 +135,7 @@ class LatentDiffusionModel:
         ]
         batch_size = len(prompt_list)
 
-        all_samples = list()
+        result_tensor_imgs = list()
         with torch.no_grad():
             # with torch.cuda.amp.autocast():
             with self.model.ema_scope():
@@ -257,9 +257,9 @@ class LatentDiffusionModel:
 
                         num_saved_imgs += 1
 
-                    all_samples.append(x_samples_ddim, )
+                    result_tensor_imgs.append(x_samples_ddim, )
 
-        grid = torch.stack(all_samples, 0)
+        grid = torch.stack(result_tensor_imgs, 0)
         grid = rearrange(
             grid,
             'n b c h w -> (n b) c h w',
@@ -287,12 +287,12 @@ class LatentDiffusionModel:
                 f"Your samples are ready and waiting four you here: \n{self.outpath} \nEnjoy."
             )
 
-        return pil_img
+        return result_tensor_imgs
 
 
 if __name__ == "__main__":
     prompt_list = [
-        "robotic shark. Oil in canvas.",
+        "painting of a robotic shark. Oil in canvas.",
         # "3D concept character. Robot shark rendered with unity. Robot shark trending on artstation. A character in 3D of a robot shark",
         # "artstation artwork, psychedelic painting of a cat",
         #"artstation artwork, psychedelic painting of a cat",
@@ -305,7 +305,7 @@ if __name__ == "__main__":
 
     model = LatentDiffusionModel()
 
-    img = model.generate_from_prompt(
+    result_tensor_imgs = model.generate_from_prompt(
         prompt_list,
         plms=False,
         ddim_steps=50,

@@ -1,13 +1,11 @@
 import json
 import logging
-import uuid
 from threading import Thread
 from typing import *
 
 from ai.image_utils import pil_to_base64
 from ai.services.pubsub import PubSub
 from ai.services.queue import Queue
-from generation_utils import generate_from_prompt
 
 
 class JobManager:
@@ -16,6 +14,7 @@ class JobManager:
         pubsub: PubSub,
         queue: Queue,
         storage,
+        db=None,
         channel_name: str = "jobs",
         logger=logging,
     ):
@@ -23,6 +22,7 @@ class JobManager:
         self.queue = queue
         self.logger = logger
         self.storage = storage
+        self.db = db
         self.channel_name = channel_name
 
         self.modeling = None
@@ -49,20 +49,20 @@ class JobManager:
 
         return
 
-    def s3_publisher_cb(
+    def store_generations(
         self,
         data_dict,
     ):
-        def s3_publisher(data_dict, ):
-            print("Publishing to s3!")
+        def storage_publisher(data_dict, ):
+            print("Publishing!")
             print(data_dict)
 
             img = data_dict.get("img")
-            job_id = data_dict.get("jobId")
+            user_id = data_dict.get("userId")
+            generation_id = data_dict.get("generationId")
+            prompt = data_dict.get("prompt")
 
-            element_id = f"{job_id}"
-
-            img_id = f"{element_id}.jpg"
+            img_id = f"img-generations/{generation_id}.jpg"
 
             self.storage.upload_pil_img(
                 pil_img=img,
@@ -79,13 +79,26 @@ class JobManager:
             )
 
             _ = self.pubsub.publish(
-                job_id,
+                user_id,
                 json.dumps(pub_data_dict),
             )
-            print(f"Published in channel {job_id}")
+            print(f"Published in channel {user_id}")
+
+            if self.db is not None:
+                s3_img_url = f"https://{self.storage.bucket_name}.s3.{self.storage.region_name}.amazonaws.com/{img_id}"
+                db_data_dict = dict(
+                    imgURL=s3_img_url,
+                    prompt=prompt,
+                )
+                self.db.store_generation(
+                    user_id=user_id,
+                    generation_id=generation_id,
+                    generation_type="image",
+                    data_dict=db_data_dict,
+                )
 
         Thread(
-            target=s3_publisher,
+            target=storage_publisher,
             args=(data_dict, ),
         ).start()
 
@@ -101,27 +114,39 @@ class JobManager:
     ):
         return
 
+    def set_message_cb(
+        self,
+        cb: Callable,
+    ):
+        self.message_cb = cb
+
+        return
+
     def process_message(
         self,
-        *args,
-        **kwargs,
+        message,
     ):
         print("processing message")
-        job_data_dict = self.queue.rpop(self.channel_name)
+        print(f"data received: {message}")
 
-        print(f"data received: {job_data_dict}")
-
-        if job_data_dict is None:
+        if message is None:
             return
 
-        job_data_dict = json.loads(job_data_dict, )
+        if isinstance(message, dict):
+            job_data = json.loads(message, )
 
-        prompt = job_data_dict.get("text")
-        job_id = job_data_dict.get("id")
-        img_pil = generate_from_prompt(prompt, )
-        self.s3_publisher_cb({
-            "jobId": job_id,
-            "img": img_pil,
-        })
+        elif isinstance(message, list):
+            job_data = []
+            for data in message:
+                data_dict = json.loads(data, )
+                job_data.append(data_dict, )
+
+        else:
+            print(f"ERROR! Unknown message data {type(message)}")
+
+        result_list = self.message_cb(job_data, )
+
+        for result_dict in result_list:
+            self.store_generations(result_dict)
 
         return
