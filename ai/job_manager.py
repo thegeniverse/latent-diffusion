@@ -144,9 +144,23 @@ class JobManager:
         else:
             print(f"ERROR! Unknown message data {type(message)}")
 
-        result_list = self.message_cb(job_data, )
+        try:
+            result_list = self.message_cb(job_data, )
 
-        for result_dict in result_list:
-            self.store_generations(result_dict)
+        except Exception as e:
+            print("There was an error with the message callback.")
+            print(repr(e))
+
+            return
+
+        try:
+            for result_dict in result_list:
+                self.store_generations(result_dict)
+
+        except Exception as e:
+            print("There was an error with storing the generations.")
+            print(repr(e))
+
+            return
 
         return
