@@ -31,14 +31,6 @@ class S3:
         img_format: str = "JPEG",
         watermark: bool = True,
     ):
-        buffer = io.BytesIO()
-
-        pil_img.save(
-            buffer,
-            format=img_format,
-        )
-        buffer.seek(0)
-
         if watermark:
             watermark_downscale_factor = 8
 
@@ -73,6 +65,14 @@ class S3:
             #      pil_img.size[1] - pil_watermark.size[1]),
             #     mask=paste_mask,
             # )
+
+        buffer = io.BytesIO()
+
+        pil_img.save(
+            buffer,
+            format=img_format,
+        )
+        buffer.seek(0)
 
         self.client_s3.upload_fileobj(
             buffer,
