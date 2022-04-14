@@ -2,6 +2,7 @@ import io
 import logging
 
 import torch
+import numpy as np
 from PIL import Image
 
 import boto3
@@ -28,6 +29,7 @@ class S3:
         pil_img: Image.Image,
         img_id: str,
         img_format: str = "JPEG",
+        watermark: bool = True,
     ):
         buffer = io.BytesIO()
 
@@ -36,6 +38,41 @@ class S3:
             format=img_format,
         )
         buffer.seek(0)
+
+        if watermark:
+            watermark_downscale_factor = 8
+
+            pil_watermark = Image.open("assets/watermark.png", ).resize((
+                int(pil_img.size[0] / watermark_downscale_factor),
+                int(pil_img.size[1] / watermark_downscale_factor),
+            ))
+
+            pil_img.paste(
+                pil_watermark,
+                (pil_img.size[0] - pil_watermark.size[0],
+                 pil_img.size[1] - pil_watermark.size[1]),
+            )
+
+            # watermark_transparency = 60
+            # watermark_downscale_factor = 8
+
+            # pil_watermark = Image.open("assets/watermark.png", ).resize((
+            #     int(pil_img.size[0] / watermark_downscale_factor),
+            #     int(pil_img.size[1] / watermark_downscale_factor),
+            # ))
+
+            # alpha = Image.new("L", pil_watermark.size, 255)
+            # pil_watermark.putalpha(alpha, )
+
+            # paste_mask = pil_watermark.split()[3].point(
+            #     lambda i: i * watermark_transparency / 100.)
+
+            # pil_img.paste(
+            #     pil_watermark,
+            #     (pil_img.size[0] - pil_watermark.size[0],
+            #      pil_img.size[1] - pil_watermark.size[1]),
+            #     mask=paste_mask,
+            # )
 
         self.client_s3.upload_fileobj(
             buffer,
