@@ -89,9 +89,9 @@ class LatentDiffusionModel:
     def generate_from_prompt(
         self,
         prompt_list: List[str],
-        ddim_steps: int = 100,
+        ddim_steps: int = 50,
         ddim_eta: float = 0.0,
-        plms: bool = True,
+        plms: bool = False,
         n_iter: int = 1,
         img_height: int = 256,
         img_width: int = 256,

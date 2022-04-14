@@ -46,20 +46,37 @@ class RedisQueue:
         channel_name: str,
         buffer_size: int,
     ):
-        message_list = []
-        for _ in range(buffer_size):
-            message = self.rpop(channel_name)
-            if message is not None:
-                message_list.append(message)
-            time.sleep(0.25)
 
-        return message_list
+        while True:
+            message = self.rpop(channel_name)
+            print("listening...")
+
+            if message is not None:
+                print("message received!")
+                print(message)
+
+                message_list = [message, ]
+
+                for _ in range(buffer_size):
+                    message= self.rpop(channel_name)
+                    if message is not None:
+                        message_list.append(message)
+                    
+                        time.sleep(0.05)
+
+                return message_list
+
+            else:
+                time.sleep(0.1)
+
+        return 
+
 
     def listen(
         self,
         channel_name: str,
         cb: Callable,
-        buffer_size: int = 4,
+        buffer_size: int = 16,
     ) -> None:
         print("listening...")
 
@@ -68,9 +85,13 @@ class RedisQueue:
                 channel_name,
                 buffer_size,
             )
+            
+            print("job data")
+            print(job_data_list)
 
             if len(job_data_list):
                 try:
+                    print("processing message")
                     cb(job_data_list, )
 
                 except Exception as e:
